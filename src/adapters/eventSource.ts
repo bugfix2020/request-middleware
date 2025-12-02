@@ -6,6 +6,7 @@
 
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import type { RequestConfig, ResponseData, HttpAdapter } from '../engine';
+import { RequestError, RequestErrorType, normalizeError } from '../engine';
 
 /**
  * EventSource 适配器配置
@@ -18,7 +19,7 @@ export interface EventSourceAdapterConfig {
   /** 事件监听器 */
   onMessage?: (event: { data: string; type?: string; id?: string }) => void;
   onOpen?: (response: Response) => void | Promise<void>;
-  onError?: (error: Error) => void;
+  onError?: (error: RequestError) => void;
   onClose?: () => void;
 }
 
@@ -81,9 +82,13 @@ export function createEventSourceAdapter(config: EventSourceAdapterConfig = {}):
         'Accept': 'text/event-stream',
       };
 
-      // 对于 SSE，通常是 GET 请求
+      // SSE only supports GET requests
       if (requestConfig.method !== 'GET') {
-        throw new Error('EventSource adapter only supports GET requests');
+        throw new RequestError(
+          'EventSource adapter only supports GET requests',
+          RequestErrorType.UNKNOWN,
+          { config: requestConfig }
+        );
       }
 
       return new Promise((resolve, reject) => {
@@ -92,7 +97,7 @@ export function createEventSourceAdapter(config: EventSourceAdapterConfig = {}):
         fetchEventSource(url, {
           method: 'GET',
           headers,
-          onopen: async (response) => {
+          onopen: async (response: Response) => {
             if (!resolved) {
               resolved = true;
               resolve({
@@ -105,15 +110,16 @@ export function createEventSourceAdapter(config: EventSourceAdapterConfig = {}):
             }
             await onOpen?.(response);
           },
-          onmessage: (event) => {
+          onmessage: (event: { data: string; event: string; id: string }) => {
             onMessage?.({ data: event.data, type: event.event, id: event.id });
           },
-          onerror: (error) => {
+          onerror: (error: Error) => {
+            const normalizedError = normalizeError(error, requestConfig);
             if (!resolved) {
               resolved = true;
-              reject(error);
+              reject(normalizedError);
             }
-            onError?.(error);
+            onError?.(normalizedError);
           },
           onclose: () => {
             onClose?.();

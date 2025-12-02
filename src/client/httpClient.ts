@@ -6,6 +6,7 @@
 
 import {
   createMiddlewareEngine,
+  normalizeError,
   type Middleware,
   type HttpContext,
   type HttpClientOptions,
@@ -80,7 +81,8 @@ export function createHttpClient(options: HttpClientOptions): IHttpClient {
       try {
         ctx.response = await adapter.request<TReqData, TResData>(ctx.request);
       } catch (error) {
-        ctx.error = error instanceof Error ? error : new Error(String(error));
+        // 统一错误处理
+        ctx.error = normalizeError(error, ctx.request);
         throw ctx.error;
       }
     };

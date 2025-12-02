@@ -21,6 +21,19 @@ export {
   
   // compose 函数
   composeMiddlewares,
+
+  // 错误处理
+  RequestErrorType,
+  RequestError,
+  NetworkError,
+  TimeoutError,
+  HttpError,
+  AbortError,
+  ParseError,
+  normalizeError,
+  createHttpError,
+  isRequestError,
+  isRetryableError,
 } from './engine';
 
 // Engine 类型导出

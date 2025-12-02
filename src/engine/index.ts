@@ -5,6 +5,21 @@
 export { MiddlewareEngine, createMiddlewareEngine } from './middlewareEngine';
 export { composeMiddlewares } from './compose';
 
+// 错误处理导出
+export {
+  RequestErrorType,
+  RequestError,
+  NetworkError,
+  TimeoutError,
+  HttpError,
+  AbortError,
+  ParseError,
+  normalizeError,
+  createHttpError,
+  isRequestError,
+  isRetryableError,
+} from './errors';
+
 // 类型导出
 export type {
   // 基础类型

@@ -4,8 +4,15 @@
  * 将 axios 实例适配为统一的 HttpAdapter 接口
  */
 
-import type { AxiosInstance, AxiosResponse, AxiosRequestConfig } from 'axios';
+import type { AxiosInstance, AxiosResponse, AxiosRequestConfig, AxiosError } from 'axios';
 import type { RequestConfig, ResponseData, HttpAdapter } from '../engine';
+import {
+  HttpError,
+  NetworkError,
+  TimeoutError,
+  AbortError,
+  normalizeError,
+} from '../engine';
 
 /**
  * Axios 适配器配置
@@ -70,10 +77,65 @@ export function createAxiosAdapter(config: AxiosAdapterConfig): HttpAdapter {
       requestConfig: RequestConfig<TReqData>
     ): Promise<ResponseData<TResData>> {
       const axiosConfig = toAxiosConfig(requestConfig);
-      const response = await instance.request<TResData>(axiosConfig);
-      return fromAxiosResponse(response, requestConfig);
+      
+      try {
+        const response = await instance.request<TResData>(axiosConfig);
+        return fromAxiosResponse(response, requestConfig);
+      } catch (error) {
+        // Handle Axios errors
+        if (isAxiosError(error)) {
+          // HTTP error (4xx/5xx)
+          if (error.response) {
+            throw new HttpError(
+              `HTTP Error: ${error.response.status} ${error.response.statusText}`,
+              error.response.status,
+              error.response.statusText,
+              requestConfig,
+              fromAxiosResponse(error.response, requestConfig)
+            );
+          }
+          
+          // Timeout
+          if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+            throw new TimeoutError(
+              error.message || `Request timeout after ${requestConfig.timeout}ms`,
+              requestConfig.timeout || 0,
+              requestConfig
+            );
+          }
+          
+          // Canceled
+          if (error.code === 'ERR_CANCELED') {
+            throw new AbortError('Request aborted', requestConfig);
+          }
+          
+          // Network error
+          if (error.code === 'ERR_NETWORK' || !error.response) {
+            throw new NetworkError(
+              error.message || 'Network error',
+              requestConfig,
+              error
+            );
+          }
+        }
+        
+        // Normalize other errors
+        throw normalizeError(error, requestConfig);
+      }
     },
   };
+}
+
+/**
+ * Check if error is AxiosError
+ */
+function isAxiosError(error: unknown): error is AxiosError {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'isAxiosError' in error &&
+    (error as AxiosError).isAxiosError === true
+  );
 }
 
 /**
