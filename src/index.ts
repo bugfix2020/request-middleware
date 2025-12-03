@@ -87,3 +87,11 @@ export type {
   FetchAdapterConfig,
   EventSourceAdapterConfig,
 } from './adapters';
+
+// ============================================================================
+// 内置中间件导出
+// ============================================================================
+
+export { createRetryMiddleware, retryMiddleware, createRetryAdapter } from './middlewares';
+
+export type { RetryMiddlewareOptions } from './middlewares';

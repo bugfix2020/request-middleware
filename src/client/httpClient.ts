@@ -7,6 +7,8 @@
 import {
   createMiddlewareEngine,
   normalizeError,
+  RequestError,
+  RequestErrorType,
   type Middleware,
   type HttpContext,
   type HttpClientOptions,
@@ -97,7 +99,11 @@ export function createHttpClient(options: HttpClientOptions): IHttpClient {
 
     // 检查响应
     if (!ctx.response) {
-      throw new Error('No response received');
+      throw new RequestError(
+        'No response received from adapter',
+        RequestErrorType.UNKNOWN,
+        { config: ctx.request }
+      );
     }
 
     return ctx.response;

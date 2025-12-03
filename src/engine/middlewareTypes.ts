@@ -104,6 +104,8 @@ export interface RequestConfig<TData = unknown> {
   baseURL?: string;
   /** 响应类型 */
   responseType?: 'json' | 'text' | 'blob' | 'arraybuffer';
+  /** 请求取消信号 */
+  signal?: AbortSignal;
   /** 自定义配置 */
   [key: string]: unknown;
 }

@@ -35,6 +35,7 @@ function toAxiosConfig<TData = unknown>(config: RequestConfig<TData>): AxiosRequ
     timeout: config.timeout,
     baseURL: config.baseURL,
     responseType: config.responseType,
+    signal: config.signal,
   };
 }
 
