@@ -1,6 +1,6 @@
 {
   "name": "@bugfix2019/request-middleware",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "A powerful request middleware library with context support. Supports axios, xhr, and fetch.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
