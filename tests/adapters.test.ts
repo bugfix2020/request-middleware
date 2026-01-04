@@ -418,18 +418,7 @@ describe('eventSourceAdapter', () => {
       expect(typeof adapter.request).toBe('function');
     });
 
-    it('should only support GET requests', async () => {
-      const adapter = createEventSourceAdapter();
-
-      await expect(
-        adapter.request({
-          url: '/events',
-          method: 'POST',
-        })
-      ).rejects.toThrow('EventSource adapter only supports GET requests');
-    });
-
-    it('should initiate EventSource connection', async () => {
+    it('should initiate EventSource connection and return session', async () => {
       // Import the mocked fetchEventSource
       const { fetchEventSource } = await import('@microsoft/fetch-event-source');
       const mockedFetchEventSource = vi.mocked(fetchEventSource);
@@ -437,7 +426,7 @@ describe('eventSourceAdapter', () => {
       // Setup mock
       mockedFetchEventSource.mockImplementation((input: RequestInfo, options: any) => {
         // Simulate onopen immediately
-        options.onopen(new Response(null, { status: 200, statusText: 'OK' }));
+        options.onopen(new Response(null, { status: 200, statusText: 'OK', headers: { 'content-type': 'text/event-stream' } }));
         return Promise.resolve();
       });
 
@@ -453,7 +442,103 @@ describe('eventSourceAdapter', () => {
       });
 
       expect(response.status).toBe(200);
-      expect(response.data).toEqual({});
+      expect(response.data).toBeDefined();
+      expect(typeof (response.data as any).cancel).toBe('function');
+      expect((response.data as any).stream).toBeDefined();
+    });
+
+    it('should support POST + JSON body and merge headers', async () => {
+      const { fetchEventSource } = await import('@microsoft/fetch-event-source');
+      const mockedFetchEventSource = vi.mocked(fetchEventSource);
+
+      mockedFetchEventSource.mockImplementation((input: RequestInfo, options: any) => {
+        options.onopen(new Response(null, { status: 200, statusText: 'OK', headers: { 'x-test': '1' } }));
+        options.onclose();
+        return Promise.resolve();
+      });
+
+      const adapter = createEventSourceAdapter({
+        baseURL: 'https://api.example.com',
+        defaultHeaders: { 'X-Default': 'default' }
+      });
+
+      const payload = { hello: 'world' };
+      const response = await adapter.request({
+        url: '/events',
+        method: 'POST',
+        headers: { 'X-Custom': 'custom' },
+        data: payload
+      });
+
+      expect(mockedFetchEventSource).toHaveBeenCalledWith(
+        'https://api.example.com/events',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify(payload),
+          headers: expect.objectContaining({
+            'X-Default': 'default',
+            'X-Custom': 'custom',
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream'
+          })
+        })
+      );
+
+      expect(response.headers).toEqual(expect.objectContaining({ 'x-test': '1' }));
+    });
+
+    it('should not override Accept header when already provided', async () => {
+      const { fetchEventSource } = await import('@microsoft/fetch-event-source');
+      const mockedFetchEventSource = vi.mocked(fetchEventSource);
+
+      mockedFetchEventSource.mockImplementation((input: RequestInfo, options: any) => {
+        options.onopen(new Response(null, { status: 200, statusText: 'OK' }));
+        options.onclose();
+        return Promise.resolve();
+      });
+
+      const adapter = createEventSourceAdapter();
+      await adapter.request({
+        url: '/events',
+        method: 'GET',
+        headers: { Accept: 'application/json' }
+      });
+
+      expect(mockedFetchEventSource).toHaveBeenCalledWith(
+        '/events',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Accept: 'application/json'
+          })
+        })
+      );
+    });
+
+    it('should push messages into session.stream', async () => {
+      const { fetchEventSource } = await import('@microsoft/fetch-event-source');
+      const mockedFetchEventSource = vi.mocked(fetchEventSource);
+
+      mockedFetchEventSource.mockImplementation((input: RequestInfo, options: any) => {
+        options.onopen(new Response(null, { status: 200, statusText: 'OK' }));
+        options.onmessage({ data: 'a', event: 'message', id: '1' });
+        options.onmessage({ data: 'b', event: 'message', id: '2' });
+        options.onclose();
+        return Promise.resolve();
+      });
+
+      const adapter = createEventSourceAdapter();
+      const response = await adapter.request({
+        url: '/events',
+        method: 'POST',
+        data: { q: 1 }
+      });
+
+      const session = response.data as any;
+      const iterator = session.stream[Symbol.asyncIterator]();
+      await expect(iterator.next()).resolves.toEqual({ value: { data: 'a', type: 'message', id: '1' }, done: false });
+      await expect(iterator.next()).resolves.toEqual({ value: { data: 'b', type: 'message', id: '2' }, done: false });
+      await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+      await expect(session.done).resolves.toBeUndefined();
     });
   });
 });

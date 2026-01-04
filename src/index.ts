@@ -73,4 +73,6 @@ export type {
   AxiosAdapterConfig,
   FetchAdapterConfig,
   EventSourceAdapterConfig,
+  EventSourceMessage,
+  EventSourceSession,
 } from './adapters';

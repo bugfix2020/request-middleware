@@ -9,4 +9,4 @@ export { createFetchAdapter, fetchAdapter } from './fetch';
 export type { FetchAdapterConfig } from './fetch';
 
 export { createEventSourceAdapter, eventSourceAdapter } from './eventSource';
-export type { EventSourceAdapterConfig } from './eventSource';
+export type { EventSourceAdapterConfig, EventSourceMessage, EventSourceSession } from './eventSource';

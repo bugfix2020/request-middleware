@@ -3,25 +3,25 @@
 [![npm version](https://img.shields.io/npm/v/@bugfix2019/request-middleware.svg)](https://www.npmjs.com/package/@bugfix2019/request-middleware)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-强大的请求中间件库，支持 ctx 上下文，兼容 axios、xhr 和 fetch。
+强大的请求中间件库，支持 ctx 上下文，兼容 axios、fetch，并支持 EventSource(SSE)。
 
 ## 📖 前言
 
 这个库的设计灵感来源于多个优秀的框架和库：
 
-- **Express**：中间件是 `(req, res, next)`，通过 `next()` 控制后续中间件执行。[expressjs.com](https://expressjs.com/)
-- **Koa**：中间件是 `(ctx, next)`，通过 `await next()` 实现经典「洋葱模型」：`next()` 前是请求前逻辑，`next()` 后是请求后逻辑。[github.com/koajs/koa](https://github.com/koajs/koa)
-- **Gin**：中间件函数 `func(c *gin.Context)` 内部调用 `c.Next()`，`Next()` 前可以做前置处理，`Next()` 后可以做后置处理和耗时统计。[gin-gonic.com](https://gin-gonic.com/en/docs/examples/custom-middleware/?utm_source=chatgpt.com)
+- **Express**：用 `next()` 把多个中间件串起来，按顺序执行。https://expressjs.com/
+- **Koa**：用 `await next()` 形成经典「洋葱模型」：`await next()` 前做前置逻辑，之后做后置逻辑。https://github.com/koajs/koa
+- **Gin**：通过 `c.Next()` 执行后续 handlers；`Next()` 前后适合做前/后置处理与耗时统计。https://gin-gonic.com/en/docs/examples/custom-middleware/
 
-受这些启发的驱动，我们希望在前端请求层面实现类似的中间件机制。通过解耦业务逻辑和通用处理（如日志、错误处理、重试等），只需一个人维护中间件，业务同学可以专注于核心业务逻辑，大大提升开发效率和代码可维护性。
+受这些启发，我们希望在前端请求层面也能拥有同样的中间件体验：把鉴权、重试、缓存、节流等通用逻辑沉淀为中间件，业务代码只关注请求本身。
 
 ## ✨ 特性
 
 - 🎯 **100% TypeScript** - 完整的类型支持
 - 🧅 **洋葱模型** - Koa 风格的中间件机制
 - 🔗 **上下文支持** - 贯穿请求生命周期的 ctx 对象
-- 🔌 **适配器模式** - 支持 axios，可扩展至 xhr/fetch
-- 📦 **官方中间件** - 内置日志、重试、缓存等中间件
+- 🔌 **适配器模式** - 支持 axios、fetch，可扩展自定义 adapter
+- 📦 **官方中间件** - 内置缓存、重试、节流等中间件
 - 🔄 **EventSource 支持** - 支持 Server-Sent Events (SSE) via @microsoft/fetch-event-source
 - 🚀 **零核心依赖** - 轻量级设计
 
@@ -42,20 +42,16 @@ yarn add @bugfix2019/request-middleware
 
 ```typescript
 import axios from 'axios';
-import { 
-  createMiddlewareEngine, 
-  fromAxios, 
-  createLoggerMiddleware 
-} from '@bugfix2019/request-middleware';
+import { createHttpClient, axiosAdapter } from '@bugfix2019/request-middleware';
 
 // 创建 axios 实例
 const axiosInstance = axios.create({
   baseURL: 'https://api.example.com',
 });
 
-// 创建中间件引擎
-const engine = createMiddlewareEngine({
-  adapter: fromAxios(axiosInstance),
+// 创建 HTTP Client（组合 adapter + middlewares）
+const client = createHttpClient({
+  adapter: axiosAdapter(axiosInstance),
   defaults: {
     timeout: 10000,
     headers: {
@@ -64,14 +60,8 @@ const engine = createMiddlewareEngine({
   },
 });
 
-// 注册日志中间件
-engine.use(createLoggerMiddleware({
-  level: 'info',
-  logRequestBody: true,
-}));
-
 // 发送请求
-const response = await engine.get<{ id: string; name: string }>('/users/1');
+const response = await client.get<{ id: string; name: string }>('/users/1');
 console.log(response.data);
 ```
 
@@ -87,21 +77,26 @@ console.log(response.data);
 ### 编写自定义中间件
 
 ```typescript
-import type { Middleware } from '@bugfix2019/request-middleware';
+import type { HttpContext, Middleware } from '@bugfix2019/request-middleware';
+import { createHttpClient } from '@bugfix2019/request-middleware';
 
-const myMiddleware: Middleware = async (ctx, next) => {
+const myMiddleware: Middleware<HttpContext> = async (ctx, next) => {
   // 请求前处理
-  console.log('请求开始:', ctx.request.url);
-  ctx.setMeta('customData', { startTime: Date.now() });
+  const startTime = Date.now();
+  console.log('请求开始:', ctx.request.method, ctx.request.url);
 
   await next(); // 调用下一个中间件
 
   // 响应后处理
-  const customData = ctx.getMeta<{ startTime: number }>('customData');
-  console.log('请求完成, 耗时:', Date.now() - customData!.startTime, 'ms');
+  const duration = Date.now() - startTime;
+  ctx.state.duration = duration;
+  console.log('请求完成, 耗时:', duration, 'ms', 'status:', ctx.response?.status);
 };
 
-engine.use(myMiddleware);
+const client = createHttpClient({
+  adapter, // axiosAdapter(...) / fetchAdapter(...) / eventSourceAdapter(...)
+  middlewares: [myMiddleware],
+});
 ```
 
 ##  上下文 (Context)
@@ -109,65 +104,52 @@ engine.use(myMiddleware);
 每个请求都有一个 `ctx` 对象，包含请求的完整生命周期信息：
 
 ```typescript
-interface RequestContext<TReqData, TResData> {
-  // 请求配置
+interface HttpContext<TReqData = unknown, TResData = unknown> {
+  /** 请求配置 */
   request: RequestConfig<TReqData>;
-  
-  // 响应对象 (响应阶段可用)
-  response?: Response<TResData>;
-  
-  // 错误对象 (发生错误时可用)
+  /** 响应对象（响应阶段可用） */
+  response?: ResponseData<TResData>;
+  /** 错误对象（发生错误时可用） */
   error?: Error;
-  
-  // 时间信息
-  startTime: number;
-  endTime?: number;
-  duration?: number;
-  
-  // 请求状态: 'pending' | 'sending' | 'success' | 'error' | 'aborted'
-  state: RequestState;
-  
-  // 元数据操作
-  meta: ContextMeta;
-  setMeta: <T>(key: string, value: T) => void;
-  getMeta: <T>(key: string) => T | undefined;
-  
-  // 中止控制
-  abort: () => void;
-  aborted: boolean;
+  /** 共享状态（中间件可自由读写） */
+  state: Record<string, unknown>;
 }
 ```
 
 ## 📦 官方中间件
 
-### Logger 日志中间件
+目前内置以下中间件：
+
+- `cacheMiddleware`：缓存 GET 请求的响应（简单内存缓存）
+- `createRetryMiddleware(options)`：失败自动重试
+- `createThrottleMiddleware(options)`：节流/限流
+
+后续计划：预计在 `0.0.4` 中把这些 `官方中间件` 从当前包里拆分出来（以独立入口/独立包的形式提供），让默认安装的包体积更小；核心的 Engine / Client / Adapters 会继续保持稳定。
 
 ```typescript
-import { createLoggerMiddleware } from '@bugfix2019/request-middleware';
+import { createHttpClient } from '@bugfix2019/request-middleware';
+import {
+  cacheMiddleware,
+  createRetryMiddleware,
+  createThrottleMiddleware,
+} from '@bugfix2019/request-middleware/engine';
 
-const logger = createLoggerMiddleware({
-  level: 'info',           // 日志级别: 'debug' | 'info' | 'warn' | 'error' | 'silent'
-  logRequestBody: true,    // 是否记录请求体
-  logResponseBody: false,  // 是否记录响应体
-  logHeaders: false,       // 是否记录请求头
-  logger: customLogger,    // 自定义日志输出器
+const client = createHttpClient({
+  adapter,
+  middlewares: [
+    createRetryMiddleware({ retries: 2, delay: 200 }),
+    createThrottleMiddleware({ limit: 5, interval: 1000 }),
+    cacheMiddleware,
+  ],
 });
-
-engine.use(logger);
 ```
-
-### 更多中间件 (即将推出)
-
-- `createRetryMiddleware` - 请求重试
-- `createCacheMiddleware` - 请求缓存
-- `createErrorHandlerMiddleware` - 错误处理
 
 ## 🔧 配置请求拦截器和响应拦截器
 
 对于 Fetch 适配器，您可以配置请求拦截器和响应拦截器来修改请求配置或响应数据：
 
 ```typescript
-import { createMiddlewareEngine, createFetchAdapter } from '@bugfix2019/request-middleware';
+import { createHttpClient, createFetchAdapter } from '@bugfix2019/request-middleware';
 
 // 创建带有拦截器的 Fetch 适配器
 const adapter = createFetchAdapter({
@@ -197,10 +179,8 @@ const adapter = createFetchAdapter({
   },
 });
 
-// 创建中间件引擎
-const engine = createMiddlewareEngine({
-  adapter,
-});
+// 创建 HTTP Client
+const client = createHttpClient({ adapter });
 ```
 
 拦截器函数可以是同步的或异步的（返回 Promise）。
@@ -210,7 +190,11 @@ const engine = createMiddlewareEngine({
 request-middleware 支持使用 @microsoft/fetch-event-source 进行 Server-Sent Events (SSE) 连接：
 
 ```typescript
-import { createMiddlewareEngine, createEventSourceAdapter } from '@bugfix2019/request-middleware';
+import {
+  createEventSourceAdapter,
+  createHttpClient,
+  type EventSourceSession,
+} from '@bugfix2019/request-middleware';
 
 // 创建 EventSource 适配器
 const adapter = createEventSourceAdapter({
@@ -229,82 +213,122 @@ const adapter = createEventSourceAdapter({
   },
 });
 
-// 创建中间件引擎
-const engine = createMiddlewareEngine({
-  adapter,
+// 创建 HTTP Client
+const client = createHttpClient({ adapter });
+
+// 发起 SSE 连接（支持 GET/POST/JSON body/headers/timeout/signal）
+const response = await client.post<{ prompt: string }, EventSourceSession>('/events', {
+  prompt: 'hello',
 });
 
-// 发起 SSE 连接
-const response = await engine.get('/events');
+const session = response.data;
+for await (const msg of session.stream) {
+  console.log('收到消息:', msg.data);
+}
+await session.done;
 ```
 
 EventSource 适配器适用于需要实时数据流的场景，如聊天应用、实时通知等。
 
 ## 🔧 API 参考
 
-### `createMiddlewareEngine(config)`
+> 推荐使用 `createHttpClient` 作为 HTTP 客户端入口；`createMiddlewareEngine` 更适合自定义上下文/非 HTTP 场景。
 
-创建中间件引擎实例。
+### `createHttpClient(options)`
+
+创建 HTTP 客户端（组合 Engine + Adapter），支持：
+
+- 全局中间件（client 级）
+- per-request 额外中间件（仅对单次请求生效）
 
 ```typescript
-const engine = createMiddlewareEngine({
-  adapter: fromAxios(axiosInstance), // 请求适配器
-  defaults: {                         // 默认请求配置
+import axios from 'axios';
+import { createHttpClient, axiosAdapter } from '@bugfix2019/request-middleware';
+
+const client = createHttpClient({
+  adapter: axiosAdapter(axios.create({ baseURL: 'https://api.example.com' })),
+  defaults: {
     timeout: 10000,
     headers: { 'X-Custom': 'value' },
   },
 });
+
+const response = await client.get('/api/users', {
+  params: { page: 1 },
+});
 ```
 
-### `engine.use(middleware)`
-
-注册中间件。
-
-```typescript
-engine.use(myMiddleware);
-engine.useAll(middleware1, middleware2, middleware3);
-```
-
-### `engine.request(config)`
+#### `client.request(config, extraMiddlewares?)`
 
 发送请求。
 
 ```typescript
-const response = await engine.request({
+const response = await client.request({
   url: '/api/users',
   method: 'GET',
   params: { page: 1 },
 });
 ```
 
-### 快捷方法
+#### 快捷方法
 
 ```typescript
-engine.get<TResData>(url, config?)
-engine.post<TReqData, TResData>(url, data?, config?)
-engine.put<TReqData, TResData>(url, data?, config?)
-engine.delete<TResData>(url, config?)
-engine.patch<TReqData, TResData>(url, data?, config?)
+client.get<TResData>(url, config?)
+client.post<TReqData, TResData>(url, data?, config?)
+client.put<TReqData, TResData>(url, data?, config?)
+client.delete<TResData>(url, config?)
+client.patch<TReqData, TResData>(url, data?, config?)
+```
+
+### `createMiddlewareEngine(options)`
+
+创建通用中间件引擎（与网络无关）。当你希望自己控制 `ctx` 与最终执行逻辑时使用。
+
+```typescript
+import { createMiddlewareEngine } from '@bugfix2019/request-middleware';
+
+type Ctx = { state: { traceId?: string } };
+
+const engine = createMiddlewareEngine<Ctx>({
+  middlewares: [
+    async (ctx, next) => {
+      ctx.state.traceId = 'trace-001';
+      await next();
+    },
+  ],
+});
+
+await engine.dispatch(
+  { state: {} },
+  async () => {
+    // final handler
+  }
+);
+```
+
+### 子路径导出
+
+该库在子路径中额外导出一些分组能力：
+
+- `@bugfix2019/request-middleware/engine`：额外导出官方中间件
+
+```typescript
+import {
+  cacheMiddleware,
+  createRetryMiddleware,
+  createThrottleMiddleware,
+} from '@bugfix2019/request-middleware/engine';
 ```
 
 ---
 
-## 🧪 测试覆盖率
+## 🧪 单元测试与覆盖率
 
-| 文件 | 语句覆盖率 | 分支覆盖率 | 函数覆盖率 | 行覆盖率 |
-|------|-----------|-----------|-----------|---------|
-| **总计** | **69.27%** | **85.32%** | **80.48%** | **69.27%** |
-| src/index.ts | 0% | 0% | 0% | 0% |
-| adapters/fetch.ts | 96.65% | 82.92% | 100% | 96.65% |
-| adapters/eventSource.ts | 81.29% | 81.81% | 50% | 81.29% |
-| adapters/axios.ts | 100% | 100% | 100% | 100% |
-| adapters/index.ts | 0% | 0% | 0% | 0% |
-| client/httpClient.ts | 98.8% | 86.66% | 100% | 98.8% |
-| client/index.ts | 0% | 0% | 0% | 0% |
-| engine/compose.ts | 97.8% | 95.23% | 100% | 97.8% |
-| engine/middlewareEngine.ts | 100% | 100% | 100% | 100% |
-| engine/index.ts | 100% | 100% | 100% | 100% |
-| engine/middlewareTypes.ts | 0% | 0% | 0% | 0% |
+- 运行单测：`pnpm test:run`
+- 生成覆盖率：`pnpm test:coverage`
+- 覆盖率阈值：见 `vitest.config.ts`（lines/functions/statements 80%，branches 75%）
+
+README 不维护静态覆盖率表，覆盖率以 CI/本地命令输出为准。
 
 ---
 
@@ -313,19 +337,10 @@ engine.patch<TReqData, TResData>(url, data?, config?)
 ```
 request-middleware/
 ├── src/
-│   ├── core/               # 核心中间件引擎
-│   │   ├── engine.ts       # MiddlewareEngine 类
-│   │   └── index.ts
-│   ├── middlewares/        # 官方中间件
-│   │   ├── logger.ts       # 日志中间件
-│   │   └── index.ts
-│   ├── adapters/           # 请求适配器
-│   │   ├── axios.ts        # Axios 适配器
-│   │   ├── fetch.ts        # Fetch 适配器
-│   │   ├── eventSource.ts  # EventSource 适配器
-│   │   └── index.ts
-│   ├── types/              # TypeScript 类型定义
-│   │   └── index.ts
+│   ├── adapters/           # 传输层适配器（axios/fetch/eventSource）
+│   ├── client/             # createHttpClient
+│   ├── engine/             # 中间件引擎（compose/dispatch/types）
+│   ├── middlewares/        # 官方中间件实现（cache/retry/throttle）
 │   └── index.ts            # 入口文件
 ├── tests/                  # 测试文件
 ├── dist/                   # 构建输出
@@ -351,22 +366,34 @@ pnpm run build
 pnpm test
 
 # 查看覆盖率
-pnpm test -- --coverage
+pnpm test:coverage
 ```
+
+## 🧩 版本与不兼容变更
+
+- 本次变更按语义化属于非 breaking：主要是对 EventSource(SSE) adapter 增强（支持 `POST/body/headers/signal/timeout` 等能力）以及补充类型导出。
+- 如果你依赖旧行为（例如：自行拼接 SSE 数据增量），请根据实际后端推送策略选择合适的数据合并方式；该库本身不强制内容拼接策略。
+
+## 📜 Changelog
+
+变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 📦 发布到 npm
 
 ```bash
-# 1. 确保构建成功
-pnpm run build
+# 在本目录执行
+cd .hc/request-middleware
 
-# 2. 确保测试通过
-pnpm test -- --run
+# 1) 安装依赖
+pnpm install
 
-# 3. 更新版本号
-npm version patch  # 1.0.0 -> 1.0.1
+# 2) 跑单测 + 覆盖率
+pnpm test:coverage
 
-# 4. 发布
+# 3) 构建（prepublishOnly 也会自动触发 build）
+pnpm build
+
+# 4) 发布（scope 包默认 private，需强制 public）
 npm publish --access public
 ```
 
@@ -376,17 +403,11 @@ MIT
 
 ## 👥 贡献者
 
-感谢以下贡献者对本项目的贡献：
+贡献指南请参考 GitHub 仓库的 CONTRIBUTING：
 
-<div style="display: flex; justify-content: center; align-items: flex-start; gap: 40px; flex-wrap: wrap;">
-  <div style="text-align: center;">
-    <a href="https://github.com/bugfix2020"><img src="https://github.com/bugfix2020.png?size=100" width="100px;" style="border-radius: 50%;border:1px solid #efefef;" alt="Polaris"/></a>
-    <br/>
-    <a href="https://github.com/bugfix2020"><strong>Polaris</strong></a>
-    <br/>
-    <sub>📧 ts02315607@gmail.com</sub>
-  </div>
-</div>
+- https://github.com/bugfix2020/request-middleware/blob/main/CONTRIBUTING.md
+
+贡献者列表请以 GitHub Contributors 页面为准。
 
 ## 🔗 相关链接
 
@@ -408,18 +429,14 @@ A: 直接在项目中引入 request-middleware 并结合 axios/fetch 适配器�
 A: 参考文档中的"编写自定义中间件"示例，实现 `(ctx, next) => Promise<void>` 结构即可。
 
 ### Q: 如何查看测试覆盖率？
-A: 运行 `pnpm test -- --coverage` 查看详细覆盖率报告。
+A: 运行 `pnpm test:coverage` 查看详细覆盖率报告。
 
 ### Q: 如何贡献代码？
-A: Fork 仓库，提交 PR，确保测试覆盖率 100%。
+A: 参考 GitHub 仓库的 CONTRIBUTING（见上方链接），Fork 仓库并提交 PR；请确保测试通过且覆盖率满足项目阈值。
 
 ---
 
 ## 🙏 致谢
 
-感谢所有为本项目做出贡献的开发者！查看完整的[贡献者列表](./CONTRIBUTORS.md)。
-
----
-
-Made with ❤️ by [Polaris](https://github.com/bugfix2020)
+感谢所有为本项目做出贡献的开发者！
 

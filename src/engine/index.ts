@@ -6,13 +6,13 @@ export { MiddlewareEngine, createMiddlewareEngine } from './middlewareEngine';
 export { composeMiddlewares } from './compose';
 
 // @isMrFan 新增中间件导出
-export { cacheMiddleware } from './cacheMiddleware';
-export { createRetryMiddleware } from './retryMiddleware';
-export { createThrottleMiddleware } from './throttleMiddleware';
+export { cacheMiddleware } from '../middlewares/cacheMiddleware';
+export { createRetryMiddleware } from '../middlewares/retryMiddleware';
+export { createThrottleMiddleware } from '../middlewares/throttleMiddleware';
 
 // 新增中间件类型导出
-export type { RetryOptions } from './retryMiddleware';
-export type { ThrottleOptions } from './throttleMiddleware';
+export type { RetryOptions } from '../middlewares/retryMiddleware';
+export type { ThrottleOptions } from '../middlewares/throttleMiddleware';
 
 // 类型导出
 export type {
